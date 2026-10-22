@@ -3,16 +3,39 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
-# Merge and validate NYC and LA service-request datasets
 
 BASE_DIR = Path(__file__).resolve().parent
-
 PROCESSED_DIR = BASE_DIR / "processed_data"
 
 NYC_PATH = PROCESSED_DIR / "nyc_cleaned"
 LA_PATH = PROCESSED_DIR / "la_cleaned"
-
 MERGED_PATH = PROCESSED_DIR / "merged_311"
+
+
+# Common schema for both cities
+
+COMMON_COLUMNS = [
+    "source_city",
+    "global_request_id",
+    "original_request_id",
+    "created_at",
+    "closed_at",
+    "request_type",
+    "status_original",
+    "status_standardized",
+    "agency_common",
+    "postal_code",
+    "postal_code_original",
+    "suspicious_postal_code",
+    "submission_channel_original",
+    "submission_channel_standardized",
+    "latitude",
+    "longitude",
+    "invalid_date_order",
+    "missing_coordinates",
+    "invalid_coordinates",
+    "resolution_hours"
+]
 
 
 # Spark setup
@@ -28,124 +51,93 @@ spark = (
 
 spark.sparkContext.setLogLevel("ERROR")
 
-heap_gb = (
-    spark.sparkContext._jvm.java.lang.Runtime
-    .getRuntime()
-    .maxMemory()
-    / (1024 ** 3)
-)
 
-print(f"\nSpark JVM maximum heap: {heap_gb:.2f} GB")
+# Validate common schema
 
+def check_schema(nyc, la):
 
-# Common columns
+    for city, df in [
+        ("NYC", nyc),
+        ("LA", la)
+    ]:
 
-COMMON_COLUMNS = [
-    "source_city",
-    "global_request_id",
-    "original_request_id",
-    "created_at",
-    "closed_at",
-    "request_type",
-    "status_original",
-    "status_standardized",
-    "agency_common",
-    "postal_code",
-    "submission_channel_original",
-    "submission_channel_standardized",
-    "latitude",
-    "longitude",
-    "invalid_date_order",
-    "missing_coordinates",
-    "resolution_hours"
-]
+        missing = set(COMMON_COLUMNS) - set(df.columns)
 
+        if missing:
+            raise ValueError(
+                f"{city} missing columns: {sorted(missing)}"
+            )
 
-def verify_columns(df, city):
-    """
-    Verify that all required common columns exist.
-    """
+    nyc_types = dict(nyc.dtypes)
+    la_types = dict(la.dtypes)
 
-    missing = [
-        column
+    differences = [
+        (
+            column,
+            nyc_types[column],
+            la_types[column]
+        )
         for column in COMMON_COLUMNS
-        if column not in df.columns
+        if nyc_types[column] != la_types[column]
     ]
 
-    if missing:
+    if differences:
         raise ValueError(
-            f"{city}: Missing required columns: {missing}"
+            f"Mismatched column types: {differences}"
         )
 
-    print(
-        f"SUCCESS: {city} contains all required columns."
-    )
+    print("SUCCESS: Common schema validation passed.")
 
 
-def validate_merged(df, expected_city_counts):
-    """
-    Validate record counts, identifiers, resolution times,
-    and essential fields in the merged dataset.
-    """
+# Validate merged dataset
 
-    print(
-        "\n========== FINAL VALIDATION =========="
-    )
+def validate(df, expected_city_counts):
 
-    # Check record count
+    expected = sum(expected_city_counts.values())
+    actual = df.count()
 
-    total = df.count()
+    print("\nTotal merged records:", actual)
+    print("Expected merged records:", expected)
 
-    expected_total = sum(expected_city_counts.values())
-
-    print("\nTotal merged records:", total)
-    print("Expected merged records:", expected_total)
-
-    if total != expected_total:
+    if actual != expected:
         raise ValueError(
-            f"Expected {expected_total} rows, found {total}"
+            "Merged record count mismatch"
         )
 
-    # Check records by city
+    # Check records for each city
 
-    print("\nRecords by source city:")
-
-    df.groupBy("source_city").count().show()
-
-    city_counts = {
+    counts = {
         row["source_city"]: row["count"]
-        for row in df.groupBy("source_city").count().collect()
+        for row in (
+            df.groupBy("source_city")
+            .count()
+            .collect()
+        )
     }
 
-    if city_counts != expected_city_counts:
+    print("Source-city counts:", counts)
+
+    if counts != expected_city_counts:
         raise ValueError(
-            f"Unexpected source-city counts: {city_counts}"
+            "Source-city count mismatch"
         )
 
-    # Check unique IDs
+    # Check request identifiers
 
-    unique_ids = (
-        df.select("global_request_id")
-        .distinct()
-        .count()
-    )
+    distinct_ids = df.select(
+        "global_request_id"
+    ).distinct().count()
 
     missing_ids = df.filter(
         F.col("global_request_id").isNull()
-        | (F.trim(F.col("global_request_id")) == "")
     ).count()
 
-    print("Distinct global IDs:", unique_ids)
-    print("Missing global IDs:", missing_ids)
+    bad_prefixes = df.filter(
+        (~F.col("global_request_id").startswith("NYC_"))
+        & (~F.col("global_request_id").startswith("LA_"))
+    ).count()
 
-    if unique_ids != total or missing_ids != 0:
-        raise ValueError(
-            "Global request IDs are not unique and complete."
-        )
-
-    # Check ID prefixes
-
-    invalid_prefixes = df.filter(
+    wrong_city_prefixes = df.filter(
         (
             (F.col("source_city") == "NYC")
             & (~F.col("global_request_id").startswith("NYC_"))
@@ -157,41 +149,27 @@ def validate_merged(df, expected_city_counts):
         )
     ).count()
 
-    print("Incorrect ID prefixes:", invalid_prefixes)
+    print("Distinct global IDs:", distinct_ids)
+    print("Missing global IDs:", missing_ids)
+    print(
+        "Incorrect ID prefixes:",
+        bad_prefixes + wrong_city_prefixes
+    )
 
-    if invalid_prefixes != 0:
-        raise ValueError(
-            "Some global IDs have incorrect city prefixes."
-        )
+    # Check resolution hours
 
-    # Check resolution times
-
-    negative_resolution = df.filter(
+    negative_hours = df.filter(
         F.col("resolution_hours") < 0
     ).count()
 
-    missing_resolution = df.filter(
+    null_hours = df.filter(
         F.col("resolution_hours").isNull()
     ).count()
 
-    print(
-        "Negative resolution hours:",
-        negative_resolution
-    )
+    print("Negative resolution hours:", negative_hours)
+    print("NULL resolution hours:", null_hours)
 
-    print(
-        "NULL resolution hours:",
-        missing_resolution
-    )
-
-    if negative_resolution != 0:
-        raise ValueError(
-            "Negative resolution hours found."
-        )
-
-    # Check missing values
-
-    print("\nMissing essential field counts:")
+    # Check essential fields
 
     essential_columns = [
         "source_city",
@@ -202,34 +180,37 @@ def validate_merged(df, expected_city_counts):
     ]
 
     for column in essential_columns:
-        missing_count = df.filter(
+
+        missing = df.filter(
             F.col(column).isNull()
         ).count()
 
-        print(f"{column}: {missing_count}")
+        print(f"Missing {column}: {missing}")
 
-    # Missing values are reported without removing source records
+        if missing:
+            raise ValueError(
+                f"Missing essential values: {column}"
+            )
 
-    print("\nSUCCESS: Final merged validation passed.")
+    if (
+        distinct_ids != actual
+        or missing_ids
+        or bad_prefixes
+        or wrong_city_prefixes
+        or negative_hours
+    ):
+        raise ValueError(
+            "Merged dataset validation failed"
+        )
 
+    print("SUCCESS: Merged validation passed.")
+
+
+# Merge NYC and LA datasets
 
 try:
 
-    # Load cleaned datasets
-
-    print(
-        "\n========== LOADING CLEANED DATASETS =========="
-    )
-
-    if not NYC_PATH.exists():
-        raise FileNotFoundError(
-            f"NYC dataset not found: {NYC_PATH}"
-        )
-
-    if not LA_PATH.exists():
-        raise FileNotFoundError(
-            f"LA dataset not found: {LA_PATH}"
-        )
+    print("\nLoading cleaned datasets")
 
     nyc_df = spark.read.parquet(str(NYC_PATH))
     la_df = spark.read.parquet(str(LA_PATH))
@@ -240,163 +221,56 @@ try:
     print("NYC records:", nyc_count)
     print("LA records:", la_count)
 
-    if nyc_count == 0 or la_count == 0:
-        raise ValueError(
-            "One or both cleaned datasets are empty."
-        )
+    # Check columns and types
 
-    expected_city_counts = {
+    check_schema(nyc_df, la_df)
+
+    # Select matching fields and merge
+
+    merged = (
+        nyc_df.select(*COMMON_COLUMNS)
+        .unionByName(
+            la_df.select(*COMMON_COLUMNS)
+        )
+    )
+
+    print("\nMerged dataset schema:")
+    merged.printSchema()
+
+    expected_counts = {
         "NYC": nyc_count,
         "LA": la_count
     }
 
-    expected_total = nyc_count + la_count
+    # Validate before saving
 
-    # Check common schema
+    validate(merged, expected_counts)
 
-    print(
-        "\n========== VERIFYING COMMON SCHEMA =========="
-    )
+    # Save merged dataset
 
-    verify_columns(nyc_df, "NYC")
-    verify_columns(la_df, "LA")
+    print("\nSaving merged dataset")
 
-    nyc_common = nyc_df.select(*COMMON_COLUMNS)
-    la_common = la_df.select(*COMMON_COLUMNS)
-
-    nyc_types = dict(nyc_common.dtypes)
-    la_types = dict(la_common.dtypes)
-
-    for column in COMMON_COLUMNS:
-        if nyc_types[column] != la_types[column]:
-            raise ValueError(
-                f"Data type mismatch in {column}: "
-                f"NYC={nyc_types[column]}, "
-                f"LA={la_types[column]}"
-            )
-
-    print("SUCCESS: Common column data types match.")
-
-    # Merge datasets
-
-    print(
-        "\n========== MERGING NYC AND LA =========="
-    )
-
-    merged_df = nyc_common.unionByName(
-        la_common
-    )
-
-    merged_count = merged_df.count()
-
-    print("Merged record count:", merged_count)
-
-    if merged_count != expected_total:
-        raise ValueError(
-            f"Expected {expected_total} merged records, "
-            f"found {merged_count}"
-        )
-
-    print("\nMerged dataset schema:")
-
-    merged_df.printSchema()
-
-    print("\nSample merged records:")
-
-    merged_df.select(
-        "source_city",
-        "global_request_id",
-        "request_type",
-        "status_standardized",
-        "resolution_hours"
-    ).show(10, truncate=False)
-
-    # Validate merged data
-
-    validate_merged(
-        merged_df,
-        expected_city_counts
-    )
-
-    # Save merged data
-
-    print(
-        "\n========== SAVING MERGED DATASET =========="
-    )
-
-    merged_df.write.mode("overwrite").parquet(
+    merged.write.mode("overwrite").parquet(
         str(MERGED_PATH)
     )
 
-    print("Saved to:", MERGED_PATH)
+    # Reload and validate saved data
 
-    # Verify saved data
+    print("\nReloading merged dataset")
 
-    print(
-        "\n========== RELOADING MERGED DATASET =========="
-    )
-
-    reloaded_df = spark.read.parquet(
+    reloaded = spark.read.parquet(
         str(MERGED_PATH)
     )
 
-    saved_count = reloaded_df.count()
-
-    schema_matches = (
-        dict(merged_df.dtypes)
-        == dict(reloaded_df.dtypes)
-    )
-
-    saved_city_counts = {
-        row["source_city"]: row["count"]
-        for row in reloaded_df.groupBy(
-            "source_city"
-        ).count().collect()
-    }
-
-    saved_unique_ids = (
-        reloaded_df
-        .select("global_request_id")
-        .distinct()
-        .count()
-    )
-
-    saved_missing_ids = reloaded_df.filter(
-        F.col("global_request_id").isNull()
-        | (F.trim(F.col("global_request_id")) == "")
-    ).count()
-
-    print("Reloaded records:", saved_count)
-    print("Schema matches:", schema_matches)
-    print("Source-city counts:", saved_city_counts)
-    print("Distinct saved IDs:", saved_unique_ids)
-    print("Missing saved IDs:", saved_missing_ids)
-
-    if (
-        saved_count != expected_total
-        or not schema_matches
-        or saved_unique_ids != saved_count
-        or saved_missing_ids != 0
-        or saved_city_counts != expected_city_counts
-    ):
+    if dict(reloaded.dtypes) != dict(merged.dtypes):
         raise ValueError(
-            "Saved merged dataset failed validation."
+            "Reloaded merged schema differs"
         )
 
-    print(
-        "\n========== PHASE 1 DATA PROCESSING COMPLETED =========="
-    )
+    validate(reloaded, expected_counts)
 
     print(
-        f"SUCCESS: {saved_count:,} NYC and LA records merged."
-    )
-
-    print(
-        "SUCCESS: Merged data saved and reloaded."
-    )
-
-    print(
-        "SUCCESS: All required validation checks passed."
+        "\nSUCCESS: Merged dataset saved and verified."
     )
 
 finally:
