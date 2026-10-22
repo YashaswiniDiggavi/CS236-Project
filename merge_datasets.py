@@ -37,6 +37,7 @@ heap_gb = (
 
 print(f"\nSpark JVM maximum heap: {heap_gb:.2f} GB")
 
+
 # Common columns
 
 COMMON_COLUMNS = [
@@ -81,36 +82,31 @@ def verify_columns(df, city):
     )
 
 
-def validate_merged(df):
+def validate_merged(df, expected_city_counts):
     """
-    Validate the unified dataset.
-
-    Checks:
-      1. Total records
-      2. City distribution
-      3. Global ID uniqueness
-      4. Missing IDs
-      5. Incorrect city prefixes
-      6. Negative resolution hours
-      7. Missing essential fields
+    Validate record counts, identifiers, resolution times,
+    and essential fields in the merged dataset.
     """
 
     print(
-        "\n========== STEP 7: FINAL VALIDATION =========="
+        "\n========== FINAL VALIDATION =========="
     )
 
-# Load cleaned datasets
+    # Check record count
 
     total = df.count()
 
-    print("\nTotal merged records:", total)
+    expected_total = sum(expected_city_counts.values())
 
-    if total != 1_600_000:
+    print("\nTotal merged records:", total)
+    print("Expected merged records:", expected_total)
+
+    if total != expected_total:
         raise ValueError(
-            f"Expected 1,600,000 rows, found {total}"
+            f"Expected {expected_total} rows, found {total}"
         )
 
-# Check records by city
+    # Check records by city
 
     print("\nRecords by source city:")
 
@@ -121,15 +117,12 @@ def validate_merged(df):
         for row in df.groupBy("source_city").count().collect()
     }
 
-    if city_counts != {
-        "NYC": 800_000,
-        "LA": 800_000
-    }:
+    if city_counts != expected_city_counts:
         raise ValueError(
             f"Unexpected source-city counts: {city_counts}"
         )
 
-# Check unique IDs
+    # Check unique IDs
 
     unique_ids = (
         df.select("global_request_id")
@@ -139,7 +132,7 @@ def validate_merged(df):
 
     missing_ids = df.filter(
         F.col("global_request_id").isNull()
-        | (F.trim("global_request_id") == "")
+        | (F.trim(F.col("global_request_id")) == "")
     ).count()
 
     print("Distinct global IDs:", unique_ids)
@@ -149,8 +142,8 @@ def validate_merged(df):
         raise ValueError(
             "Global request IDs are not unique and complete."
         )
-    
-# Check ID prefixes
+
+    # Check ID prefixes
 
     invalid_prefixes = df.filter(
         (
@@ -171,7 +164,7 @@ def validate_merged(df):
             "Some global IDs have incorrect city prefixes."
         )
 
-# Check resolution times
+    # Check resolution times
 
     negative_resolution = df.filter(
         F.col("resolution_hours") < 0
@@ -196,7 +189,7 @@ def validate_merged(df):
             "Negative resolution hours found."
         )
 
-# Check missing values
+    # Check missing values
 
     print("\nMissing essential field counts:")
 
@@ -215,18 +208,17 @@ def validate_merged(df):
 
         print(f"{column}: {missing_count}")
 
-# Missing values are reported rather than silently
-# dropping records from the source datasets.
+    # Missing values are reported without removing source records
 
     print("\nSUCCESS: Final merged validation passed.")
 
 
 try:
 
-# Load cleaned datasets
+    # Load cleaned datasets
 
     print(
-        "\n========== STEP 6: LOADING CLEANED DATASETS =========="
+        "\n========== LOADING CLEANED DATASETS =========="
     )
 
     if not NYC_PATH.exists():
@@ -248,12 +240,19 @@ try:
     print("NYC records:", nyc_count)
     print("LA records:", la_count)
 
-    if nyc_count != 800_000 or la_count != 800_000:
+    if nyc_count == 0 or la_count == 0:
         raise ValueError(
-            "Source dataset counts are incorrect."
+            "One or both cleaned datasets are empty."
         )
 
-# Check common schema
+    expected_city_counts = {
+        "NYC": nyc_count,
+        "LA": la_count
+    }
+
+    expected_total = nyc_count + la_count
+
+    # Check common schema
 
     print(
         "\n========== VERIFYING COMMON SCHEMA =========="
@@ -262,7 +261,6 @@ try:
     verify_columns(nyc_df, "NYC")
     verify_columns(la_df, "LA")
 
-    # Select consistent fields and ordering.
     nyc_common = nyc_df.select(*COMMON_COLUMNS)
     la_common = la_df.select(*COMMON_COLUMNS)
 
@@ -279,7 +277,7 @@ try:
 
     print("SUCCESS: Common column data types match.")
 
-# Merge datasets
+    # Merge datasets
 
     print(
         "\n========== MERGING NYC AND LA =========="
@@ -292,6 +290,12 @@ try:
     merged_count = merged_df.count()
 
     print("Merged record count:", merged_count)
+
+    if merged_count != expected_total:
+        raise ValueError(
+            f"Expected {expected_total} merged records, "
+            f"found {merged_count}"
+        )
 
     print("\nMerged dataset schema:")
 
@@ -307,11 +311,14 @@ try:
         "resolution_hours"
     ).show(10, truncate=False)
 
-# Validate merged data
+    # Validate merged data
 
-    validate_merged(merged_df)
+    validate_merged(
+        merged_df,
+        expected_city_counts
+    )
 
-# Save merged data
+    # Save merged data
 
     print(
         "\n========== SAVING MERGED DATASET =========="
@@ -323,7 +330,7 @@ try:
 
     print("Saved to:", MERGED_PATH)
 
-# Verify saved data
+    # Verify saved data
 
     print(
         "\n========== RELOADING MERGED DATASET =========="
@@ -354,19 +361,23 @@ try:
         .count()
     )
 
+    saved_missing_ids = reloaded_df.filter(
+        F.col("global_request_id").isNull()
+        | (F.trim(F.col("global_request_id")) == "")
+    ).count()
+
     print("Reloaded records:", saved_count)
     print("Schema matches:", schema_matches)
     print("Source-city counts:", saved_city_counts)
     print("Distinct saved IDs:", saved_unique_ids)
+    print("Missing saved IDs:", saved_missing_ids)
 
     if (
-        saved_count != 1_600_000
+        saved_count != expected_total
         or not schema_matches
         or saved_unique_ids != saved_count
-        or saved_city_counts != {
-            "NYC": 800_000,
-            "LA": 800_000
-        }
+        or saved_missing_ids != 0
+        or saved_city_counts != expected_city_counts
     ):
         raise ValueError(
             "Saved merged dataset failed validation."
@@ -377,7 +388,7 @@ try:
     )
 
     print(
-        "SUCCESS: 1,600,000 NYC and LA records merged."
+        f"SUCCESS: {saved_count:,} NYC and LA records merged."
     )
 
     print(

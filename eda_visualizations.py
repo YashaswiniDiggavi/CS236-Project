@@ -1,25 +1,37 @@
 import csv
 from pathlib import Path
+
 import matplotlib.pyplot as plt
 
+
 BASE_DIR = Path(__file__).resolve().parent
+
 RESULTS_DIR = BASE_DIR / "eda_results"
 CHART_DIR = RESULTS_DIR / "charts"
-CHART_DIR.mkdir(exist_ok=True)
 
+CHART_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# Load summary results
 
 def load_csv(filename):
     path = RESULTS_DIR / filename
 
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    with open(path, newline="", encoding="utf-8") as file:
+        return list(csv.DictReader(file))
 
+
+# Create bar charts
 
 def bar_chart(filename, category, title, output, top=10):
     rows = load_csv(filename)[:top]
 
-    labels = [r[category] for r in rows]
-    counts = [int(r["count"]) for r in rows]
+    labels = [
+        row[category] if row[category] else "Unknown"
+        for row in rows
+    ]
+
+    counts = [int(row["count"]) for row in rows]
 
     plt.figure(figsize=(11, 6))
     plt.barh(labels[::-1], counts[::-1])
@@ -30,11 +42,13 @@ def bar_chart(filename, category, title, output, top=10):
     plt.close()
 
 
+# Create monthly charts
+
 def monthly_chart(filename, title, output):
     rows = load_csv(filename)
 
-    months = [r["month"] for r in rows]
-    counts = [int(r["count"]) for r in rows]
+    months = [row["month"] for row in rows]
+    counts = [int(row["count"]) for row in rows]
 
     plt.figure(figsize=(10, 5))
     plt.plot(months, counts, marker="o")
@@ -47,10 +61,13 @@ def monthly_chart(filename, title, output):
     plt.close()
 
 
+# Original EDA charts
+
 for city, type_col, zip_col in [
     ("nyc", "complaint_type", "incident_zip"),
     ("la", "requesttype", "zipcode")
 ]:
+
     bar_chart(
         f"{city}_request_types.csv",
         type_col,
@@ -87,4 +104,70 @@ for city, type_col, zip_col in [
         f"{city}_monthly.png"
     )
 
-print("EDA charts saved in:", CHART_DIR)
+
+print("Original EDA charts saved in:", CHART_DIR)
+
+
+# Charts for cleaned datasets
+
+PROCESSED_DIR = RESULTS_DIR / "processed"
+PROCESSED_CHART_DIR = CHART_DIR / "processed"
+
+PROCESSED_CHART_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def processed_bar_chart(filename, column, title, output, top=10):
+    path = PROCESSED_DIR / filename
+
+    with open(path, newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+
+    rows = rows[:top]
+
+    labels = [
+        row[column] if row[column] else "Unknown"
+        for row in rows
+    ]
+
+    counts = [int(row["count"]) for row in rows]
+
+    plt.figure(figsize=(11, 6))
+    plt.barh(labels[::-1], counts[::-1])
+    plt.title(title)
+    plt.xlabel("Number of requests")
+    plt.tight_layout()
+    plt.savefig(
+        PROCESSED_CHART_DIR / output,
+        dpi=150
+    )
+    plt.close()
+
+
+# Processed EDA charts
+
+for city in ["nyc", "la"]:
+
+    processed_bar_chart(
+        f"{city}_channels.csv",
+        "submission_channel_standardized",
+        f"{city.upper()} - Standardized Submission Channels",
+        f"{city}_channels.png",
+        top=15
+    )
+
+    processed_bar_chart(
+        f"{city}_statuses.csv",
+        "status_standardized",
+        f"{city.upper()} - Standardized Request Statuses",
+        f"{city}_statuses.png"
+    )
+
+    processed_bar_chart(
+        f"{city}_postal_codes.csv",
+        "postal_code",
+        f"{city.upper()} - Top 10 Cleaned Postal Codes",
+        f"{city}_postal_codes.png"
+    )
+
+
+print("Processed charts saved in:", PROCESSED_CHART_DIR)
