@@ -12,7 +12,7 @@ LA_PATH = PROCESSED_DIR / "la_cleaned"
 MERGED_PATH = PROCESSED_DIR / "merged_311"
 
 
-# Common schema for both cities
+# Common columns for NYC and LA
 
 COMMON_COLUMNS = [
     "source_city",
@@ -34,7 +34,8 @@ COMMON_COLUMNS = [
     "invalid_date_order",
     "missing_coordinates",
     "invalid_coordinates",
-    "resolution_hours"
+    "resolution_hours",
+    "is_valid_completed"
 ]
 
 
@@ -55,12 +56,10 @@ spark.sparkContext.setLogLevel("ERROR")
 # Validate common schema
 
 def check_schema(nyc, la):
-
     for city, df in [
         ("NYC", nyc),
         ("LA", la)
     ]:
-
         missing = set(COMMON_COLUMNS) - set(df.columns)
 
         if missing:
@@ -92,7 +91,6 @@ def check_schema(nyc, la):
 # Validate merged dataset
 
 def validate(df, expected_city_counts):
-
     expected = sum(expected_city_counts.values())
     actual = df.count()
 
@@ -100,11 +98,9 @@ def validate(df, expected_city_counts):
     print("Expected merged records:", expected)
 
     if actual != expected:
-        raise ValueError(
-            "Merged record count mismatch"
-        )
+        raise ValueError("Merged record count mismatch")
 
-    # Check records for each city
+    # Check source city counts
 
     counts = {
         row["source_city"]: row["count"]
@@ -118,11 +114,9 @@ def validate(df, expected_city_counts):
     print("Source-city counts:", counts)
 
     if counts != expected_city_counts:
-        raise ValueError(
-            "Source-city count mismatch"
-        )
+        raise ValueError("Source-city count mismatch")
 
-    # Check request identifiers
+    # Validate global identifiers
 
     distinct_ids = df.select(
         "global_request_id"
@@ -130,11 +124,6 @@ def validate(df, expected_city_counts):
 
     missing_ids = df.filter(
         F.col("global_request_id").isNull()
-    ).count()
-
-    bad_prefixes = df.filter(
-        (~F.col("global_request_id").startswith("NYC_"))
-        & (~F.col("global_request_id").startswith("LA_"))
     ).count()
 
     wrong_city_prefixes = df.filter(
@@ -151,12 +140,9 @@ def validate(df, expected_city_counts):
 
     print("Distinct global IDs:", distinct_ids)
     print("Missing global IDs:", missing_ids)
-    print(
-        "Incorrect ID prefixes:",
-        bad_prefixes + wrong_city_prefixes
-    )
+    print("Incorrect ID prefixes:", wrong_city_prefixes)
 
-    # Check resolution hours
+    # Validate resolution values
 
     negative_hours = df.filter(
         F.col("resolution_hours") < 0
@@ -166,10 +152,32 @@ def validate(df, expected_city_counts):
         F.col("resolution_hours").isNull()
     ).count()
 
+    valid_completed = df.filter(
+        F.col("is_valid_completed")
+    ).count()
+
+    # Check completed request flags
+
+    invalid_completed = df.filter(
+    F.col("is_valid_completed")
+    & (
+        (F.col("status_standardized") != "Closed")
+        | F.col("resolution_hours").isNull()
+    )
+).count()
+
+    null_flags = df.filter(
+        F.col("is_valid_completed").isNull()
+        | F.col("invalid_coordinates").isNull()
+    ).count()
+
     print("Negative resolution hours:", negative_hours)
     print("NULL resolution hours:", null_hours)
+    print("Valid completed requests:", valid_completed)
+    print("Invalid completed flags:", invalid_completed)
+    print("NULL quality flags:", null_flags)
 
-    # Check essential fields
+    # Check essential columns
 
     essential_columns = [
         "source_city",
@@ -179,25 +187,24 @@ def validate(df, expected_city_counts):
         "request_type"
     ]
 
-    for column in essential_columns:
+    missing_essential = 0
 
+    for column in essential_columns:
         missing = df.filter(
             F.col(column).isNull()
         ).count()
 
         print(f"Missing {column}: {missing}")
-
-        if missing:
-            raise ValueError(
-                f"Missing essential values: {column}"
-            )
+        missing_essential += missing
 
     if (
         distinct_ids != actual
         or missing_ids
-        or bad_prefixes
         or wrong_city_prefixes
         or negative_hours
+        or invalid_completed
+        or null_flags
+        or missing_essential
     ):
         raise ValueError(
             "Merged dataset validation failed"
@@ -206,10 +213,9 @@ def validate(df, expected_city_counts):
     print("SUCCESS: Merged validation passed.")
 
 
-# Merge NYC and LA datasets
+# Merge cleaned datasets
 
 try:
-
     print("\nLoading cleaned datasets")
 
     nyc_df = spark.read.parquet(str(NYC_PATH))
@@ -221,11 +227,11 @@ try:
     print("NYC records:", nyc_count)
     print("LA records:", la_count)
 
-    # Check columns and types
+    # Check common columns and types
 
     check_schema(nyc_df, la_df)
 
-    # Select matching fields and merge
+    # Merge common columns
 
     merged = (
         nyc_df.select(*COMMON_COLUMNS)
@@ -242,8 +248,6 @@ try:
         "LA": la_count
     }
 
-    # Validate before saving
-
     validate(merged, expected_counts)
 
     # Save merged dataset
@@ -254,7 +258,7 @@ try:
         str(MERGED_PATH)
     )
 
-    # Reload and validate saved data
+    # Reload and validate
 
     print("\nReloading merged dataset")
 
@@ -274,5 +278,4 @@ try:
     )
 
 finally:
-
     spark.stop()

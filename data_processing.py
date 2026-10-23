@@ -30,18 +30,7 @@ spark = (
 spark.sparkContext.setLogLevel("ERROR")
 
 
-# Parse dates and check conversion
-
-DATE_FORMATS = [
-    "yyyy-MM-dd HH:mm:ss",
-    "yyyy-MM-dd'T'HH:mm:ss",
-    "yyyy-MM-dd'T'HH:mm:ss.SSS",
-    "MM/dd/yyyy hh:mm:ss a",
-    "MM/dd/yyyy HH:mm:ss",
-    "MM/dd/yyyy hh:mm a",
-    "yyyy-MM-dd"
-]
-
+# Parse timestamps
 
 def parse_timestamp(column_name):
     value = F.trim(F.col(column_name).cast("string"))
@@ -57,6 +46,8 @@ def parse_timestamp(column_name):
     )
 
 
+# Load original datasets
+
 def load_source(path, created_col, closed_col):
     df = spark.read.csv(
         str(path),
@@ -64,21 +55,14 @@ def load_source(path, created_col, closed_col):
         inferSchema=False
     )
 
-    # Keep the original date text for validation
-
     for name in [created_col, closed_col]:
         df = df.withColumn(name + "_raw", F.col(name))
         df = df.withColumn(name, parse_timestamp(name))
 
-    # Convert coordinate measurements
-
     for name in ["latitude", "longitude"]:
         df = df.withColumn(
-            name,
-            F.col(name).cast("double")
+            name, F.col(name).cast("double")
         )
-
-    # Convert NYC projected coordinates where available
 
     for name in [
         "x_coordinate_state_plane",
@@ -86,8 +70,7 @@ def load_source(path, created_col, closed_col):
     ]:
         if name in df.columns:
             df = df.withColumn(
-                name,
-                F.col(name).cast("double")
+                name, F.col(name).cast("double")
             )
 
     return df
@@ -99,7 +82,6 @@ def count_and_record(df, condition, city, issue, results):
     value = df.filter(condition).count()
 
     results.append((city, issue, value))
-
     print(f"{issue}: {value}")
 
     return value
@@ -110,18 +92,15 @@ def count_and_record(df, condition, city, issue, results):
 def clean_dataset(
     df, city, zip_col, created_col, closed_col, results
 ):
-
     print(f"\nCleaning {city} dataset")
 
     initial_count = df.count()
-
     print("Original records:", initial_count)
 
-    # Trim string values and convert blanks to NULL
+    # Clean string values
 
     for field in df.schema.fields:
         if isinstance(field.dataType, StringType):
-
             name = field.name
             stripped = F.trim(F.col(name))
 
@@ -131,12 +110,11 @@ def clean_dataset(
                 .otherwise(stripped)
             )
 
-    # Remove duplicate records
+    # Remove duplicates
 
     dedup_cols = [
-        column
-        for column in df.columns
-        if not column.endswith("_raw")
+        name for name in df.columns
+        if not name.endswith("_raw")
     ]
 
     df = df.dropDuplicates(dedup_cols)
@@ -146,7 +124,7 @@ def clean_dataset(
     print("Records after deduplication:", cleaned_count)
     print("Duplicates removed:", initial_count - cleaned_count)
 
-    # Preserve original postal code and clean ZIP+4
+    # Clean postal codes
 
     df = df.withColumn(
         "postal_code_original",
@@ -165,14 +143,13 @@ def clean_dataset(
         )
     )
 
-    # Check approximate ZIP-code ranges by city
-
     prefix = F.substring(
         F.col("postal_code_clean"), 1, 3
     ).cast("int")
 
-    if city == "NYC":
+    # Approximate city-specific ranges
 
+    if city == "NYC":
         plausible_zip = (
             prefix.between(100, 104)
             | prefix.between(110, 114)
@@ -183,7 +160,6 @@ def clean_dataset(
         lon_min, lon_max = -74.30, -73.65
 
     else:
-
         plausible_zip = (
             prefix.between(900, 908)
             | prefix.between(910, 918)
@@ -194,11 +170,14 @@ def clean_dataset(
 
     df = df.withColumn(
         "suspicious_postal_code",
-        F.col("postal_code_clean").isNotNull()
-        & (~plausible_zip)
+        F.coalesce(
+            F.col("postal_code_clean").isNotNull()
+            & (~plausible_zip),
+            F.lit(False)
+        )
     )
 
-    # Check temporal consistency
+    # Check temporal ordering
 
     df = df.withColumn(
         "invalid_date_order",
@@ -215,10 +194,9 @@ def clean_dataset(
         | F.col("longitude").isNull()
     )
 
-    # Flag coordinates outside rough city bounds
+    # Check invalid coordinates
 
-    df = df.withColumn(
-        "invalid_coordinates",
+    invalid_location = (
         (
             (F.col("latitude") == 0)
             & (F.col("longitude") == 0)
@@ -234,52 +212,46 @@ def clean_dataset(
         )
     )
 
+    df = df.withColumn(
+        "invalid_coordinates",
+        F.coalesce(invalid_location, F.lit(False))
+    )
+
+    # Validate cleaning
+
     print(f"\nData quality checks for {city}")
 
-    count_and_record(
-        df,
-        F.col("postal_code_clean").isNull(),
-        city,
-        "missing_or_invalid_zip",
-        results
-    )
+    checks = [
+        (
+            "missing_or_invalid_zip",
+            F.col("postal_code_clean").isNull()
+        ),
+        (
+            "suspicious_zip_prefix",
+            F.col("suspicious_postal_code")
+        ),
+        (
+            "invalid_date_order",
+            F.col("invalid_date_order")
+        ),
+        (
+            "missing_coordinates",
+            F.col("missing_coordinates")
+        ),
+        (
+            "coordinates_outside_rough_city_bounds",
+            F.col("invalid_coordinates")
+        )
+    ]
 
-    count_and_record(
-        df,
-        F.col("suspicious_postal_code"),
-        city,
-        "suspicious_zip_prefix",
-        results
-    )
+    for issue, condition in checks:
+        count_and_record(
+            df, condition, city, issue, results
+        )
 
-    count_and_record(
-        df,
-        F.col("invalid_date_order"),
-        city,
-        "invalid_date_order",
-        results
-    )
-
-    count_and_record(
-        df,
-        F.col("missing_coordinates"),
-        city,
-        "missing_coordinates",
-        results
-    )
-
-    count_and_record(
-        df,
-        F.col("invalid_coordinates"),
-        city,
-        "coordinates_outside_rough_city_bounds",
-        results
-    )
-
-    # Check date parsing failures
+    # Check timestamp parsing
 
     for name in [created_col, closed_col]:
-
         raw = name + "_raw"
 
         count_and_record(
@@ -302,10 +274,9 @@ def clean_dataset(
     return df
 
 
-# Adjust NYC and LA schemas
+# Adjust common schema
 
 def adjust_schema(df, city):
-
     if city == "NYC":
         mapping = {
             "id": "unique_key",
@@ -316,7 +287,6 @@ def adjust_schema(df, city):
             "zip": "postal_code_clean",
             "channel": "open_data_channel_type"
         }
-
     else:
         mapping = {
             "id": "srnumber",
@@ -365,7 +335,7 @@ def adjust_schema(df, city):
     )
 
 
-# Validate matching columns
+# Validate common columns
 
 COMMON_COLUMNS = [
     "original_request_id",
@@ -387,12 +357,10 @@ COMMON_COLUMNS = [
 
 
 def validate_common_schema(nyc_df, la_df):
-
     nyc_types = dict(nyc_df.dtypes)
     la_types = dict(la_df.dtypes)
 
     for name in COMMON_COLUMNS:
-
         if (
             name not in nyc_types
             or name not in la_types
@@ -407,14 +375,10 @@ def validate_common_schema(nyc_df, la_df):
     print("SUCCESS: All common column types match.")
 
 
-# Standardize status and submission channels
+# Standardize categories
 
 def standardize_categories(df, city):
-
-    status = F.lower(
-        F.trim(F.col("status_original"))
-    )
-
+    status = F.lower(F.trim(F.col("status_original")))
     channel = F.lower(
         F.trim(F.col("submission_channel_original"))
     )
@@ -498,7 +462,10 @@ def standardize_categories(df, city):
     (
         df.groupBy("submission_channel_standardized")
         .count()
-        .orderBy(F.desc("count"), "submission_channel_standardized")
+        .orderBy(
+            F.desc("count"),
+            "submission_channel_standardized"
+        )
         .show(30, False)
     )
 
@@ -508,42 +475,33 @@ def standardize_categories(df, city):
 # Check temporal inconsistencies
 
 def temporal_checks(df, city, results):
-
     print(f"\nTemporal consistency for {city}")
 
     status = F.col("status_standardized")
 
-    count_and_record(
-        df,
-        (status == "Closed") & F.col("closed_at").isNull(),
-        city,
-        "closed_missing_closure_date",
-        results
-    )
+    checks = [
+        (
+            "closed_missing_closure_date",
+            (status == "Closed") & F.col("closed_at").isNull()
+        ),
+        (
+            "open_with_closure_date",
+            (status == "Open") & F.col("closed_at").isNotNull()
+        ),
+        (
+            "future_created_at",
+            F.col("created_at") > F.current_timestamp()
+        ),
+        (
+            "future_closed_at",
+            F.col("closed_at") > F.current_timestamp()
+        )
+    ]
 
-    count_and_record(
-        df,
-        (status == "Open") & F.col("closed_at").isNotNull(),
-        city,
-        "open_with_closure_date",
-        results
-    )
-
-    count_and_record(
-        df,
-        F.col("created_at") > F.current_timestamp(),
-        city,
-        "future_created_at",
-        results
-    )
-
-    count_and_record(
-        df,
-        F.col("closed_at") > F.current_timestamp(),
-        city,
-        "future_closed_at",
-        results
-    )
+    for issue, condition in checks:
+        count_and_record(
+            df, condition, city, issue, results
+        )
 
     return df
 
@@ -551,7 +509,6 @@ def temporal_checks(df, city, results):
 # Create required attributes
 
 def create_attributes(df, city):
-
     df = (
         df
         .withColumn("source_city", F.lit(city))
@@ -568,8 +525,7 @@ def create_attributes(df, city):
                 F.col("created_at").isNotNull()
                 & F.col("closed_at").isNotNull()
                 & (
-                    F.col("closed_at")
-                    >= F.col("created_at")
+                    F.col("closed_at") >= F.col("created_at")
                 ),
                 (
                     F.unix_timestamp("closed_at")
@@ -578,6 +534,20 @@ def create_attributes(df, city):
             ).otherwise(F.lit(None).cast("double"))
         )
     )
+
+    # Flag completed requests with valid timestamps
+
+    df = df.withColumn(
+        "is_valid_completed",
+        (
+            (F.col("status_standardized") == "Closed")
+            & F.col("created_at").isNotNull()
+            & F.col("closed_at").isNotNull()
+            & (F.col("closed_at") >= F.col("created_at"))
+        )
+    )
+
+    # Validate derived attributes
 
     total = df.count()
 
@@ -594,14 +564,27 @@ def create_attributes(df, city):
         F.col("resolution_hours") < 0
     ).count()
 
-    print(f"\n{city} attribute validation")
+    invalid_completed = df.filter(
+        F.col("is_valid_completed")
+        & (
+            F.col("resolution_hours").isNull()
+            | (F.col("status_standardized") != "Closed")
+        )
+    ).count()
 
+    completed_count = df.filter(
+        F.col("is_valid_completed")
+    ).count()
+
+    print(f"\n{city} attribute validation")
     print("Total records:", total)
     print("Distinct global IDs:", unique)
     print("Missing global IDs:", missing)
     print("Negative resolution hours:", negative)
+    print("Valid completed requests:", completed_count)
+    print("Invalid completed flags:", invalid_completed)
 
-    if unique != total or missing or negative:
+    if unique != total or missing or negative or invalid_completed:
         raise ValueError(
             f"Failed {city} attribute validation"
         )
@@ -621,7 +604,6 @@ def create_attributes(df, city):
 # Save and validate Parquet datasets
 
 def persist_and_validate(df, city, name):
-
     path = OUTPUT_DIR / name
 
     print(f"\nSaving {city} dataset")
@@ -653,41 +635,33 @@ def persist_and_validate(df, city, name):
         F.col("source_city") != city
     ).count()
 
-    if wrong_city:
-        raise ValueError(
-            f"{city} source-city validation failed"
-        )
-
     unique_count = saved.select(
         "global_request_id"
     ).distinct().count()
 
-    if unique_count != expected_count:
+    null_flags = saved.filter(
+        F.col("invalid_coordinates").isNull()
+        | F.col("is_valid_completed").isNull()
+    ).count()
+
+    if wrong_city or unique_count != expected_count or null_flags:
         raise ValueError(
-            f"{city} saved ID validation failed"
+            f"{city} saved validation failed"
         )
 
     print(f"SUCCESS: {city} saved and verified.")
 
 
-# Save quality checks for report
+# Save data quality summary
 
 def save_quality_results(results):
-
     path = RESULTS_DIR / "data_quality_summary.csv"
 
     with open(
         path, "w", newline="", encoding="utf-8"
     ) as file:
-
         writer = csv.writer(file)
-
-        writer.writerow([
-            "city",
-            "check",
-            "count"
-        ])
-
+        writer.writerow(["city", "check", "count"])
         writer.writerows(results)
 
     print("Saved quality summary:", path)
@@ -696,7 +670,6 @@ def save_quality_results(results):
 # Run data processing
 
 try:
-
     quality_results = []
 
     nyc = load_source(
@@ -718,20 +691,14 @@ try:
     )
 
     nyc = clean_dataset(
-        nyc,
-        "NYC",
-        "incident_zip",
-        "created_date",
-        "closed_date",
+        nyc, "NYC", "incident_zip",
+        "created_date", "closed_date",
         quality_results
     )
 
     la = clean_dataset(
-        la,
-        "LA",
-        "zipcode",
-        "createddate",
-        "closeddate",
+        la, "LA", "zipcode",
+        "createddate", "closeddate",
         quality_results
     )
 
@@ -744,30 +711,22 @@ try:
     la = standardize_categories(la, "LA")
 
     nyc = temporal_checks(
-        nyc,
-        "NYC",
-        quality_results
+        nyc, "NYC", quality_results
     )
 
     la = temporal_checks(
-        la,
-        "LA",
-        quality_results
+        la, "LA", quality_results
     )
 
     nyc = create_attributes(nyc, "NYC")
     la = create_attributes(la, "LA")
 
     persist_and_validate(
-        nyc,
-        "NYC",
-        "nyc_cleaned"
+        nyc, "NYC", "nyc_cleaned"
     )
 
     persist_and_validate(
-        la,
-        "LA",
-        "la_cleaned"
+        la, "LA", "la_cleaned"
     )
 
     save_quality_results(quality_results)
@@ -775,5 +734,4 @@ try:
     print("\nSUCCESS: Data processing completed.")
 
 finally:
-
     spark.stop()
