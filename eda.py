@@ -236,6 +236,16 @@ def check_invalid_values(
     print("Incomplete Coordinate Pairs:",
           incomplete_coordinates)
 
+# Check geographic coordinate ranges
+def check_coordinate_ranges(df, dataset_name):
+    print(f"\n========== {dataset_name}: COORDINATE RANGES ==========")
+
+    df.select(
+        F.min("latitude").alias("min_latitude"),
+        F.max("latitude").alias("max_latitude"),
+        F.min("longitude").alias("min_longitude"),
+        F.max("longitude").alias("max_longitude")
+    ).show(truncate=False)
 
 # Run EDA checks
 
@@ -282,6 +292,10 @@ try:
         "LA"
     )
 
+    # Check coordinate ranges
+    check_coordinate_ranges(nyc_df, "NYC")
+    check_coordinate_ranges(la_df, "LA")
+    
 finally:
 
 # Stop Spark even if an analysis raises an error
