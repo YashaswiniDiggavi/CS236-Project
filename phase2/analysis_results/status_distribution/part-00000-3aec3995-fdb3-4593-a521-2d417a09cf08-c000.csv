@@ -1,0 +1,12 @@
+source_city,rank,category,request_count,city_total,percentage
+LA,1,Closed,730126,800000,91.27
+LA,2,Cancelled,34725,800000,4.34
+LA,3,Pending,17972,800000,2.25
+LA,4,Open,16081,800000,2.01
+LA,5,Referred Out,932,800000,0.12
+LA,6,Forward,164,800000,0.02
+NYC,1,Closed,704789,800000,88.1
+NYC,2,In Progress,58067,800000,7.26
+NYC,3,Open,36761,800000,4.6
+NYC,4,Pending,330,800000,0.04
+NYC,5,Unknown,53,800000,0.01

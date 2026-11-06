@@ -1,0 +1,11 @@
+source_city,request_type,completed_requests,avg_resolution_hours,rank
+LA,Single Streetlight Issue,7872,4031.7,1
+LA,Multiple Streetlight Issue,8375,3380.1,2
+LA,Homeless Encampment,33710,1505.48,3
+LA,Illegal Dumping Pickup,55923,174.23,4
+LA,Bulky Items,364522,84.74,5
+NYC,Calorie Labeling,1,1440.29,1
+NYC,Mobile Food Vendor,153,1440.26,2
+NYC,Tattooing,12,1440.24,3
+NYC,Poison Ivy,18,1366.86,4
+NYC,Food Establishment,843,1178.77,5

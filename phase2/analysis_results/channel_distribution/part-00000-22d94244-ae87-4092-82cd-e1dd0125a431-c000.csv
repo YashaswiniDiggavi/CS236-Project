@@ -1,0 +1,14 @@
+source_city,rank,category,request_count,city_total,percentage
+LA,1,Phone,314675,800000,39.33
+LA,2,Mobile,277390,800000,34.67
+LA,3,Online / Self-service,128424,800000,16.05
+LA,4,Driver Self Report,75986,800000,9.5
+LA,5,City Staff / Internal,1943,800000,0.24
+LA,6,Email / Mail / Fax,1527,800000,0.19
+LA,7,Social Media,51,800000,0.01
+LA,8,In-person,4,800000,0.0
+NYC,1,Online / Self-service,419261,800000,52.41
+NYC,2,Phone,163519,800000,20.44
+NYC,3,Mobile,150744,800000,18.84
+NYC,4,Unknown,65687,800000,8.21
+NYC,5,Other,789,800000,0.1
