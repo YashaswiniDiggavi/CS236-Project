@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Browse &middot; 311 Service Requests{% endblock %}
+
+{% block content %}
+{# One dropdown in the filter form; "All" means no filter on that attribute. #}
+{% macro choice(name, label, items, current) %}
+  <label>{{ label }}
+    <select name="{{ name }}">
+      <option value="">All</option>
+      {% for item in items %}
+        <option value="{{ item }}" {{ 'selected' if item == current }}>{{ item }}</option>
+      {% endfor %}
+    </select>
+  </label>
+{% endmacro %}
+
+{# Dataset selection: choosing a dataset starts a fresh search on that table. #}
+<nav class="tabs" aria-label="Dataset">
+  {% for key, label in datasets %}
+    <a href="{{ url_for('index', dataset=key) }}" class="{{ 'active' if key == dataset }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+{% if inserted %}
+  <div class="notice ok">The new request was stored in the unified table (merged_311) and is shown below.</div>
+{% endif %}
+{% for message in messages %}
+  <div class="notice warn">{{ message }}</div>
+{% endfor %}
+
+<form method="get" action="{{ url_for('index') }}" class="card">
+  <input type="hidden" name="dataset" value="{{ dataset }}">
+  <div class="grid">
+    {{ choice('source_city', 'City', cities, filters.source_city) }}
+    <label>Created from
+      <input type="date" name="date_from" value="{{ filters.date_from }}">
+    </label>
+    <label>Created to
+      <input type="date" name="date_to" value="{{ filters.date_to }}">
+    </label>
+    {{ choice('status', 'Status', options.status, filters.status) }}
+    {{ choice('agency', 'Agency', options.agency, filters.agency) }}
+    {{ choice('channel', 'Submission channel', options.channel, filters.channel) }}
+    <label><span>Request type <span class="hint">(contains)</span></span>
+      <input type="text" name="request_type" value="{{ filters.request_type }}" placeholder="e.g. noise">
+    </label>
+    <label>Postal code
+      <input type="text" name="postal_code" value="{{ filters.postal_code }}" placeholder="e.g. 90026" maxlength="10">
+    </label>
+    <label><span>Request ID <span class="hint">(exact)</span></span>
+      <input type="text" name="request_id" value="{{ filters.request_id }}" placeholder="e.g. LA_1-4604958861">
+    </label>
+  </div>
+  <div class="actions">
+    <button type="submit">Search</button>
+    <a class="button secondary" href="{{ url_for('index', dataset=dataset) }}">Clear filters</a>
+  </div>
+</form>
+
+<div class="summary">
+  <span>
+    <strong>{{ dataset_label }}</strong> ({{ table }}) &middot;
+    {% if rows %}records {{ first_row }}&ndash;{{ last_row }} &middot; page {{ page }}
+    {% else %}no records{% endif %}
+  </span>
+  <span>{{ page_size }} records per page</span>
+</div>
+
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>{% for heading in columns %}<th>{{ heading }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="card">No records match these filters{% if page > 1 %} on this page{% endif %}.</div>
+{% endif %}
+
+<div class="pager">
+  {% if prev_url %}<a href="{{ prev_url }}">&larr; Previous</a>{% else %}<span class="disabled">&larr; Previous</span>{% endif %}
+  <span>Page {{ page }}</span>
+  {% if next_url %}<a href="{{ next_url }}">Next &rarr;</a>{% else %}<span class="disabled">Next &rarr;</span>{% endif %}
+</div>
+
+<details open>
+  <summary>SQL sent to PostgreSQL for this page</summary>
+  <pre>{{ shown_sql }}</pre>
+</details>
+{% endblock %}

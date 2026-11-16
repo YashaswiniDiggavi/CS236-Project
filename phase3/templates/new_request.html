@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}New request &middot; 311 Service Requests{% endblock %}
+
+{% block content %}
+<h2 style="margin-top:0">New service request</h2>
+<p class="sub" style="margin-bottom:16px">
+  Stored in the unified table (merged_311). Fields marked * are required. The
+  request ID is generated automatically.
+</p>
+
+{% if problems %}
+  <div class="notice error">
+    Please fix the following:
+    <ul>{% for problem in problems %}<li>{{ problem }}</li>{% endfor %}</ul>
+  </div>
+{% endif %}
+
+<form method="post" action="{{ url_for('new_request') }}" class="card">
+  <div class="grid">
+    <label>City *
+      <select name="source_city" required>
+        {% for city in cities %}
+          <option value="{{ city }}" {{ 'selected' if city == values.source_city }}>{{ city }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>Request type *
+      <input type="text" name="request_type" list="request-types" required maxlength="200"
+             value="{{ values.request_type }}" placeholder="Type or pick a suggestion">
+      <datalist id="request-types">
+        {% for request_type in choices.request_types %}<option value="{{ request_type }}">{% endfor %}
+      </datalist>
+    </label>
+
+    <label>Created at *
+      <input type="datetime-local" name="created_at" required value="{{ values.created_at }}">
+    </label>
+
+    <label><span>Closed at <span class="hint">(optional)</span></span>
+      <input type="datetime-local" name="closed_at" value="{{ values.closed_at }}">
+    </label>
+
+    <label>Status *
+      <select name="status" required>
+        <option value="">Choose&hellip;</option>
+        {% for status in choices.statuses %}
+          <option value="{{ status }}" {{ 'selected' if status == values.status }}>{{ status }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>Agency / organization *
+      <select name="agency" required>
+        <option value="">Choose&hellip;</option>
+        {% for city, agencies in choices.agencies.items() %}
+          <optgroup label="{{ city }}">
+            {% for agency in agencies %}
+              <option value="{{ agency }}" {{ 'selected' if agency == values.agency }}>{{ agency }}</option>
+            {% endfor %}
+          </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>Submission channel *
+      <select name="channel" required>
+        <option value="">Choose&hellip;</option>
+        {% for channel in choices.channels %}
+          <option value="{{ channel }}" {{ 'selected' if channel == values.channel }}>{{ channel }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label><span>Postal code <span class="hint">(5 digits, optional)</span></span>
+      <input type="text" name="postal_code" value="{{ values.postal_code }}" maxlength="5"
+             pattern="[0-9]{5}" inputmode="numeric" placeholder="e.g. 90026">
+    </label>
+
+    <label><span>Latitude <span class="hint">(optional)</span></span>
+      <input type="number" name="latitude" step="any" value="{{ values.latitude }}" placeholder="e.g. 34.0522">
+    </label>
+
+    <label><span>Longitude <span class="hint">(optional)</span></span>
+      <input type="number" name="longitude" step="any" value="{{ values.longitude }}" placeholder="e.g. -118.2437">
+    </label>
+  </div>
+  <div class="actions">
+    <button type="submit">Save request</button>
+    <a class="button secondary" href="{{ url_for('index') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
